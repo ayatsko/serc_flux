@@ -1,0 +1,358 @@
+---
+title: "LGR_processing_template_pilot"
+author: "abbey yatsko"
+date: "8/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LGR Processing Template 
+## August 2022
+
+## PART 1 - INTRODUCTION ----
+### The purpose of this document is to process and visualize gas flux data from the Los Gatos Research Ultraportable Greenhouse Gas Analyzer (LGR UGGA). Gas flux data comes from pieces of deadwood at different stages in the decay trajectory. This document uses pilot data collected from 257 samples of deadwood at the Smithsonian Environmental Research Center (SERC) in Edgewater, MD. All code is adapted from Genevieve Noyce.  
+
+## PART 2 - PREPROCESS ----
+### Set workspace, load in raw data (.txt files taken directly from the LGR include necessary packages and call on libraries
+
+```{r workspace}
+library(data.table)
+library(scales)
+library(ggplot2)
+library(ggpubr)
+library(sqldf)
+library(dplyr)
+
+# data load and prep 
+# set working directory
+setwd("/Users/abbeyyatsko/Downloads/")
+
+# get names of all LGR files with GHG concentration, a.k.a the data with the form ('...f####.txt')
+filenames <- list.files(pattern='f0000',full.names=T)
+
+# read in LGR datafiles to list and go from .txt to .csv 
+data <- lapply(filenames,read.csv,skip=1)
+
+# combine all files into single dataframe for 9 days of sampling
+data <- do.call(rbind,data)
+```
+
+formatting dates and times: 
+```{r date/time}
+# pull out date and time data
+date_time <- strptime(data[,1],format='%m/%d/%Y %H:%M:%S')
+
+# add year,month,day,JD,hour,min,sec columns to dataframe
+Year <- as.numeric(format(date_time,'%Y'))
+Month <- as.numeric(format(date_time,'%m'))
+Day <- as.numeric(format(date_time,'%d'))
+fDOY <- as.numeric(julian(date_time,'2022-01-01'))  #Change for year
+Hour <- as.numeric(format(date_time,'%k'))
+Min <- as.numeric(format(date_time,'%M'))
+Sec <- as.numeric(format(date_time,'%S'))
+data <- cbind(date_time,Year,Month,Day,fDOY,Hour,Min,Sec,data[,-1])
+# save LGR data as data.table
+data <- data.table(data)
+```
+
+now what we have is some better-formatted raw data that came straight from the LGR itself. A good checkpoint is to quickly plot this so that we can see that there is data for each sample day (there should be 9 total). 
+
+preliminary viz: 
+```{r prelimplots}
+# for co2
+co2 <- ggplot(data, aes(date_time, X.CO2.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("CO2 flux")
+
+# for ch4 
+ch4 <- ggplot(data, aes(date_time, X.CH4.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("CH4 flux")
+
+# view co2 and ch4 plots together
+ggarrange(co2, ch4)
+```
+
+## PART 3 - MERGE WITH METADATA ----
+here, the goal is to take information about each individual sample that was measured for GHG flux and merge it with the flux readout that we just preprocessed. ultimately, we want to say for a given sample, here are all of the timepoints for which GHGs were measured over. then we can extract this information and have the change in GHGs through time (4 min sampling period) for each piece of deadwood that we sampled.
+
+read in and format metadata, focusing on fraction Day of Year (fDOY):
+```{r format metadata}
+# day 1 data 
+# read in file with metadata
+meta_dat <- read.csv('/Users/abbeyyatsko/Downloads/dw_sample_cubes_all - Sheet1 (6).csv')
+as.Date(meta_dat$measure_day, '%m/%d/%Y')
+
+## Pull out date and time data
+date_time_start <- strptime(paste(meta_dat$measure_day,meta_dat$resp_start),'%m/%d/%Y %H:%M:%S')
+
+## Add 30 seconds to set buffered start time
+date_time_start <- date_time_start+30
+
+## Add 3.5 min (210 sec) to determine end time
+date_time_end <- date_time_start+210
+
+## Add fDOY columns for start and endtime to dataframe
+fDOY_start <- as.numeric(julian(date_time_start,'2022-01-01'))  #Change for year
+fDOY_end <- as.numeric(julian(date_time_end,'2022-01-01'))  #Change for year
+meta_dat <- cbind(fDOY_start,fDOY_end,meta_dat)
+
+# calculate average respiration temperature - add column
+meta_dat$avg_respT <- rowMeans(meta_dat[ , c(14:18)], na.rm = TRUE)
+
+# create new identifier: PIECETAG_DC (includes piecetag but also decay class info)
+# this is necessary because sometimes multiple samples were taken per log (and share the same PIECETAG)
+meta_dat$PIECETAG_DC <- paste(meta_dat$PIECETAG, meta_dat$decay_class, sep = "-")
+
+# change piecetags to factor level variables 
+meta_dat$PIECETAG_DC <- as.factor(meta_dat$PIECETAG_DC) 
+
+# rename co2 and ch4 columns because naming format including '.' messes up the sql code 
+data <- data %>%
+  rename(CH4 = X.CH4._ppm,
+         CO2 = X.CO2._ppm)
+
+data <- data %>%
+  rename(CH4_dry = X.CH4.d_ppm,
+         CO2_dry = X.CO2.d_ppm)
+```
+
+merge LGR files to plot with metadata - the ultimate goal is to clip out samples and remove measurements for when the chamber was empty 
+```{r sample clip}
+
+# complete merge for respiration data and metadata
+data_merge <- sqldf("select data.fDOY, data.CO2_dry, data.CH4_dry, meta_dat.PIECETAG_DC, meta_dat.avg_respT, meta_dat.species, meta_dat.moisture_percentage_g, meta_dat.decay_class, meta_dat.fDOY_start 
+from data LEFT JOIN meta_dat ON (data.fDOY BETWEEN meta_dat.fDOY_start AND meta_dat.fDOY_end)")
+
+# NOW that things are in working order and paired up: parse through only the data recorded for ch4 where PIECETAG is recorded - this means that the data actually means something and is assigned to an actual sample
+
+# use 'complete.cases'
+data_merge <- data_merge[complete.cases(data_merge), ]
+
+# now visually check clipped bits of data 
+# co2 (xlim=c(212.4705, 212.5215) corresponds to only the first day of flux measurement)
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(data,plot(fDOY,CO2_dry,ylim=c(400,1300), xlim=c(212.4705, 212.5215)))
+with(data_merge,plot(fDOY,CO2_dry,ylim=c(400,1300), xlim=c(212.4705, 212.5215)))
+
+# ch4 
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(data,plot(fDOY,CH4_dry,ylim=c(1.95,2.4), xlim=c(212.4705, 212.5215)))
+with(data_merge,plot(fDOY,CH4_dry,ylim=c(1.95,2.4), xlim=c(212.4705, 212.5215)))
+```
+
+since the data is now merged, we can export the .csv file as an intermediate and do some last minute edits/additions to the file that will come into play in later steps
+
+Add 'flag' columns (skip for now?) and export merged data to .csv file
+```{r export data}
+# d1query$Flag_CH4='Y'
+# d1query$Flag_CO2='Y'
+# d1query$CH4_notes=''
+# d1query$CO2_notes=''
+# d2query$Flag_CH4='Y'
+# d2query$Flag_CO2='Y'
+# d2query$CH4_notes=''
+# d2query$CO2_notes=''
+
+# export merged file (this is really clipped data, each chamber measurement corresponds to a PIECETAG_DC sample)
+# write.csv(data_merge,"/Users/abbeyyatsko/Downloads/data_merged.csv", row.names = FALSE)
+```
+
+## PART 4 - PROCESS ----
+### create linear plots using (fDOY ~ CO2/CH4) and then further seperating out individual records by PIECETAG. 
+
+first, take the merged data for the fluxes and join info for samples (pilot_raw_data.csv) based on 'PIECETAG'
+```{r}
+# load in merged data
+data_merge <- read.csv("/Users/abbeyyatsko/Downloads/data_merged.csv")
+
+# check structure and adjust factor variables
+str(data_merge)
+data_merge$PIECETAG_DC <- as.factor(data_merge$PIECETAG_DC)
+data_merge$species <- as.factor(data_merge$species)
+data_merge$decay_class <- as.factor(data_merge$decay_class)
+```
+
+to start out by visualizing each individual sample fluxes for both co2 and ch4: 
+```{r graph seperate samples}
+# only graph 1st day of measurements (17 samples)
+day1 <- meta_dat$PIECETAG_DC[1:17]
+data_merge_day1 <- data_merge[data_merge$PIECETAG_DC %in% day1,]
+
+co2 <- ggplot(data_merge_day1, aes(fDOY, CO2_dry, color = decay_class)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG_DC, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+
+ch4 <- ggplot(data_merge_day1, aes(fDOY, CH4_dry, color = decay_class)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG_DC, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+```
+
+convert ppm to moles for CH4 and CO2
+```{r}
+# use known volume of chamber (in m3) to convert ppm of gas to liters of gas
+# little mason jars are 4oz = 0.118294L 
+# add chamber volume column: 
+data_merge$chamber_vol <- 0.118294
+
+# need to subtract volume of wood block itself: modeled as 3x3x3cm cube = 0.009 L 
+# **this assumption might change: idea to model some as soil, some as the cube? to be determined**
+# add sample volume column: 
+data_merge$sample_vol <- 0.009
+
+# add gas volume column 
+data_merge$gas_vol <- data_merge$chamber_vol - data_merge$sample_vol
+
+# CH4
+data_merge$CH4_dry_L=
+  # parts CH4 per million parts air * volume of air in chamber (m3) * 1000 L per m3
+  (data_merge$CH4_dry/1000000) * data_merge$gas_vol * 1000 
+
+# CO2
+data_merge$CO2_dry_L=
+  # parts CO2 per million parts air * volume of air in chamber (m3) * 1000 L per m3
+  (data_merge$CO2_dry/1000000) * data_merge$gas_vol * 1000 
+
+# Use ideal gas law to calculate umol of CH4 or mmol of CO2
+# CH4
+data_merge$CH4_dry_umol=
+  # (atm pressure * L CH4) / (R in L*atm/?K*mol * ?K temp) * 10^6 umol/mol
+  ((1*data_merge$CH4_dry_L)/(0.08206*(data_merge$avg_respT+273)))*10^6
+
+# CO2
+data_merge$CO2_dry_mmol=
+  # (atm pressure * L CO2) / (R in L*atm/?K*mol * ?K temp) * 10^3 mmol/mol
+  ((1*data_merge$CO2_dry_L)/(0.08206*(data_merge$avg_respT+273)))*10^3
+
+```
+
+calculate chamber fluxes 
+```{r}
+## Identify start of fluxes
+Time_start <- meta_dat[,c("fDOY_start","PIECETAG_DC")]
+flux.times=unique(Time_start$fDOY_start)
+
+# Create new dataframes to hold final fluxes 
+fluxes.CH4=data.frame(matrix(NA,nrow=length(flux.times)))
+fluxes.CO2=data.frame(matrix(NA,nrow=length(flux.times)))
+
+## Add named columns
+# CH4
+fluxes.CH4$Time_start=flux.times
+fluxes.CH4$flux.CH4=0
+fluxes.CH4$R2.CH4=0
+fluxes.CH4$p.CH4=0
+# CO2
+fluxes.CO2$Time_start=flux.times
+fluxes.CO2$flux.CO2=0
+fluxes.CO2$R2.CO2=0
+fluxes.CO2$p.CO2=0
+
+## Remove initial empty column
+fluxes.CO2=fluxes.CO2[,-1]
+fluxes.CH4=fluxes.CH4[,-1]
+
+## For each start time
+for (i in flux.times) {
+  ## CH4 ##
+  # Subset data for one chamber measurement
+  temp1=subset(data_merge,fDOY_start==i)
+  # Set corresponding row of output table
+  j=which(flux.times==i)
+  # Determine if start time has a CH4 flux
+  if (nrow(temp1)>0) {
+    # If so:  
+    # Calulate flux in umol/day using linear regression
+    mod=with(temp1,lm(CH4_dry_umol~fDOY))
+    # Save flux rate and R2 and p-value of slope in corresponding row of dataframe
+    # flux rate, converted from umol/day to umol/m2/day
+    fluxes.CH4$flux.CH4[j]=coef(mod)[2]
+    # R2 of slope
+    fluxes.CH4$R2.CH4[j]=summary(mod)$r.squared
+    # p-value of slope
+    fluxes.CH4$p.CH4[j]=summary(mod)$coefficients[2,4]
+    # If not:
+    # Fill rows of table with NA    
+  } else {
+    fluxes.CH4$flux.CH4[j]=NA
+    fluxes.CH4$R2.CH4[j]=NA
+    fluxes.CH4$p.CH4[j]=NA
+  }
+  ## CO2 ##
+  # Subset data for one chamber measurement
+  temp2=subset(data_merge,fDOY_start==i)
+  # Calulate flux in mol/day using linear regression
+  mod=with(temp2,lm(CO2_dry_mmol~fDOY))
+  # Save flux rate and R2 and p-value of slope in corresponding row of dataframe
+  # flux rate, converted from mol/day to mol/m2/day
+  fluxes.CO2$flux.CO2[j]=coef(mod)[2]
+  # R2 of slope
+  fluxes.CO2$R2.CO2[j]=summary(mod)$r.squared
+  # p-value of slope
+  fluxes.CO2$p.CO2[j]=summary(mod)$coefficients[2,4]
+}
+
+# merge metadata back in to flux files 
+# CO2
+meta_dat <- meta_dat %>%
+  rename(Time_start = fDOY_start)
+
+CO2_fluxfinal <- merge(fluxes.CO2, meta_dat, by="Time_start")
+
+# CH4
+CH4_fluxfinal <- merge(fluxes.CH4, meta_dat, by="Time_start")
+
+## Export fluxes as .csv file
+# CO2 (units are mmol/day)
+write.csv(CO2_fluxfinal,"/Users/abbeyyatsko/Downloads/CO2_fluxfinal.csv", row.names = FALSE)
+
+# CH4 (units are umol/day)
+write.csv(CH4_fluxfinal,"/Users/abbeyyatsko/Downloads/CH4_fluxfinal.csv", row.names = FALSE)
+```
+
+visualize chamber fluxes 
+```{r}
+# decay class by CO2 flux (boxplot)
+a <- ggplot(data = CO2_fluxfinal, aes(x = as.factor(decay_class), y = flux.CO2)) + 
+  geom_boxplot()+ 
+  geom_jitter()+
+  theme_light()
+
+# decay class by CH4 flux (boxplot)
+b <- ggplot(data = CH4_fluxfinal, aes(x = as.factor(decay_class), y = flux.CH4)) + 
+  geom_boxplot()+ 
+  geom_jitter()+
+  theme_light()
+
+# facet by species
+# CO2
+a + facet_wrap(~ species, ncol=2)
+
+# CH4
+b + facet_wrap(~ species, ncol=2)
+
+# CO2 respiration by moisture content 
+c <- ggplot(data = CO2_fluxfinal, aes(x = moisture_percentage_g, y = flux.CO2)) + 
+  geom_point()+ 
+  theme_light()
+
+# facet by species
+c + facet_wrap(~ species, ncol=2)
+
+# CH4 respiration by moisture content 
+d <- ggplot(data = CH4_fluxfinal, aes(x = moisture_percentage_g, y = flux.CH4)) + 
+  geom_point()+ 
+  theme_light()
+
+# # facet by species
+d + facet_wrap(~ species, ncol=2)
+```
