@@ -1,0 +1,357 @@
+---
+title: "LGR_processing_template_pilot"
+author: "abbey yatsko"
+date: "8/24/2021"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# LGR Processing Template - PILOT
+
+## PART 1 - INTRODUCTION ----
+### The purpose of this document is to outline the necessary steps to process and visualize gas flux data from the Los Gatos Research Ultraportable Greenhouse Gas Analyzer (LGR UGGA). Gas flux data comes from pieces of deadwood at different stages in the decay trajectory. This document uses pilot data collected from 16 samples of deadwood at the Smithsonian Environmental Research Center (SERC) in Edgewater, MD. All code is adapted from Genevieve Noyce (SERC biogeochemist).  
+
+### Set workspace, load in raw data (.txt files taken directly from the LGR include necessary packages and call on libraries
+
+#### for pilot data - .txt files are coming from two different days ('d1' and 'd2'), therefore two files need to be brought in from respective folders and formatted to be read as .csv
+
+##### we do not want to merge these day 1 and day 2 files however, as the date/time conflict that would occur since the data spans 2 days would be really messy. therefore everything will be preprocessed seperately 
+
+## PART 2 - PREPROCESS ----
+
+setting workspace: 
+```{r workspace}
+library(data.table)
+library(scales)
+library(ggplot2)
+library(ggpubr)
+library(sqldf)
+library(dplyr)
+
+# day 1 data load and prep 
+# set working directory
+setwd("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/data_FLUX/pilot/2021-08-03")
+# get names of all LGR files with GHG concentration, a.k.a the data with the form ('...f####.txt')
+filenames_d1 <- list.files(pattern='f0',full.names=T)
+# read in LGR datafiles to list and go from .txt to .csv 
+data_d1 <- lapply(filenames_d1,read.csv,skip=1)
+# combine all files into single dataframe for day 1 
+dat_all_d1 <- do.call(rbind,data_d1)
+```
+
+```{r}
+# day 2 data load and prep 
+# repeat above steps 
+setwd("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/data_FLUX/pilot/2021-08-04")
+filenames_d2 <- list.files(pattern='f0',full.names=T)
+data_d2 <- lapply(filenames_d2,read.csv,skip=1)
+dat_all_d2 <- do.call(rbind,data_d2)
+```
+
+formatting dates and times: 
+```{r date/time}
+# day 1 data
+# pull out date and time data
+date_time <- strptime(dat_all_d1[,1],format='%m/%d/%Y %H:%M:%S')
+# add year,month,day,JD,hour,min,sec columns to dataframe
+Year <- as.numeric(format(date_time,'%Y'))
+Month <- as.numeric(format(date_time,'%m'))
+Day <- as.numeric(format(date_time,'%d'))
+fDOY <- as.numeric(julian(date_time,'2021-01-01'))  #Change for year
+Hour <- as.numeric(format(date_time,'%k'))
+Min <- as.numeric(format(date_time,'%M'))
+Sec <- as.numeric(format(date_time,'%S'))
+dat_all_d1 <- cbind(date_time,Year,Month,Day,fDOY,Hour,Min,Sec,dat_all_d1[,-1])
+# save LGR data as data.table
+dat_all_d1 <- data.table(dat_all_d1)
+
+# day 2 data
+# process same as above
+date_time <- strptime(dat_all_d2[,1],format='%m/%d/%Y %H:%M:%S')
+Year <- as.numeric(format(date_time,'%Y'))
+Month <- as.numeric(format(date_time,'%m'))
+Day <- as.numeric(format(date_time,'%d'))
+fDOY <- as.numeric(julian(date_time,'2021-01-01'))  #Change for year
+Hour <- as.numeric(format(date_time,'%k'))
+Min <- as.numeric(format(date_time,'%M'))
+Sec <- as.numeric(format(date_time,'%S'))
+dat_all_d2 <- cbind(date_time,Year,Month,Day,fDOY,Hour,Min,Sec,dat_all_d2[,-1])
+dat_all_d2 <- data.table(dat_all_d2)
+```
+
+essentially now what we have is some better-formatted raw data that came straight from the LGR itself. A good checkpoint is to quickly plot this so that we can see (roughly) the same visual that we got for the [GHGs] when the LGR was running in real time. let's do that below: 
+
+preliminary viz: 
+```{r prelimplots}
+# day 1 data 
+# for co2
+co2_d1 <- ggplot(dat_all_d1, aes(date_time, X.CO2.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Day 1 CO2")
+# for ch4 
+ch4_d1 <- ggplot(dat_all_d1, aes(date_time, X.CH4.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Day 1 CH4")
+
+# day 2 data 
+# for co2
+co2_d2 <- ggplot(dat_all_d2, aes(date_time, X.CO2.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Day 2 CO2")
+# for ch4 
+ch4_d2 <- ggplot(dat_all_d2, aes(date_time, X.CH4.d_ppm)) +
+  geom_point() +
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +
+  ggtitle("Day 2 CH4")
+
+# view all plots together (day 1 and day 2)
+ggarrange(co2_d1, ch4_d1, co2_d2, ch4_d2)
+```
+
+all looks good - this is remniscent of what we saw when the data was actually being collected in real time. time to move on and parse out the [GHGs] for when samples were recorded. 
+
+## PART 3 - MERGE WITH METADATA ----
+here, the goal is to take information about each individual sample that was measured for GHG flux and merge it with the flux readout that we just preprocessed. ultimately, we want to say for a given sample, here are all of the timepoints for which GHGs were measured over. then we can extract this information and have the change in GHGs through time (5 min sampling period) for each piece of deadwood that we sampled!
+
+read in and format metadata, focusing on fraction Day of Year (fDOY):
+```{r format metadata}
+# day 1 data 
+# read in file with metadata
+setwd("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/data_FLUX/pilot/2021-08-03")
+mdd1 <- read.csv('plot_metadata_day1.csv')
+as.Date(mdd1$Date, '%m/%d/%y')
+
+## Pull out date and time data
+mdd1_date_time_start <- strptime(paste(mdd1$Date,mdd1$Time_start),'%m/%d/%y %H:%M')
+
+## Add 30 seconds to set start time to be within flux period 
+mdd1_date_time_start <- mdd1_date_time_start+30
+
+## Add 5 min (300 sec) - the above 30 sec interlude (total s = 270) to flux start 
+# time to get flux end time
+mdd1_date_time_end <- mdd1_date_time_start+270
+
+## Add fDOY columns for start and endtime to dataframe
+fDOY_start <- as.numeric(julian(mdd1_date_time_start,'2021-01-01'))  #Change for year
+fDOY_end <- as.numeric(julian(mdd1_date_time_end,'2021-01-01'))  #Change for year
+mdd1 <- cbind(fDOY_start,fDOY_end,mdd1)
+```
+
+```{r}
+# day 2 data 
+# repeat all  steps accordingly 
+setwd("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/data_FLUX/pilot/2021-08-04")
+mdd2 <- read.csv('plot_metadata_day2.csv')
+as.Date(mdd2$Date, '%m/%d/%y')
+mdd2_date_time_start <- strptime(paste(mdd2$Date,mdd2$Time_start),'%m/%d/%y %H:%M')
+mdd2_date_time_start <- mdd2_date_time_start+30
+mdd2_date_time_end <- mdd2_date_time_start+270
+fDOY_start <- as.numeric(julian(mdd2_date_time_start,'2021-01-01'))  #Change for year
+fDOY_end <- as.numeric(julian(mdd2_date_time_end,'2021-01-01'))  #Change for year
+mdd2 <- cbind(fDOY_start,fDOY_end,mdd2)
+```
+
+merge LGR files to plot with metadata - the ultimate goal is to clip out samples and remove 'background' LGR [GHG] measurements (i.e., empty chamber measurements)
+
+```{r sample clip}
+# need to rename co2 and ch4 columns because naming format including '.' messes up the sql code 
+dat_all_d1 <- dat_all_d1 %>%
+  rename(CH4 = X.CH4._ppm,
+         CO2 = X.CO2._ppm)
+dat_all_d2 <- dat_all_d2 %>%
+  rename(CH4 = X.CH4._ppm,
+         CO2 = X.CO2._ppm)
+
+# complete merge for day 1 samples
+d1query <- sqldf("select dat_all_d1.fDOY, dat_all_d1.CO2, dat_all_d1.CH4, mdd1.PIECETAG, mdd1.Volume, dat_all_d1.AmbT_C 
+from dat_all_d1 LEFT JOIN mdd1 ON (dat_all_d1.fDOY BETWEEN mdd1.fDOY_start AND mdd1.fDOY_end)")
+
+# complete merge for day 2 samples
+
+d2query <- sqldf("select dat_all_d2.fDOY, dat_all_d2.CO2, dat_all_d2.CH4, mdd2.PIECETAG, mdd2.Volume, dat_all_d2.AmbT_C
+from dat_all_d2 LEFT JOIN mdd2 ON (dat_all_d2.fDOY BETWEEN mdd2.fDOY_start AND mdd2.fDOY_end)")
+
+# NOW that things are in working order and paired up: parse through only the data recorded for ch4 where PIECETAG is recorded - this means that the data actually means something and is assigned to an actual sample
+
+# use 'complete.cases'
+d1query <- d1query[complete.cases(d1query), ]
+d2query <- d2query[complete.cases(d2query), ]
+
+# now visually check clipped bits of data 
+# day 1 samples
+#co2
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(dat_all_d1,plot(fDOY,CO2,ylim=c(400,1300)))
+with(d1query,plot(fDOY,CO2,ylim=c(400,1300)))
+# ch4 
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(dat_all_d1,plot(fDOY,CH4,ylim=c(1.95,2.4)))
+with(d1query,plot(fDOY,CH4,ylim=c(1.95,2.4)))
+
+# day 2 samples
+# co2
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(dat_all_d2,plot(fDOY,CO2,ylim=c(400,1200)))
+with(d2query,plot(fDOY,CO2,ylim=c(400,1200)))
+# ch4 
+par(mfrow=c(2,1),mar=c(4,4,1,1))
+with(dat_all_d2,plot(fDOY,CH4,ylim=c(1.95,2.4)))
+with(d2query,plot(fDOY,CH4,ylim=c(1.95,2.4)))
+```
+
+since the data is now merged, we can export the .csv file as an intermediate and do some last minute edits/additions to the file that will come into play in later steps
+
+Add 'flag' columns and export merged data to .csv file saved on server:
+```{r export data}
+d1query$Flag_CH4='Y'
+d1query$Flag_CO2='Y'
+d1query$CH4_notes=''
+d1query$CO2_notes=''
+d2query$Flag_CH4='Y'
+d2query$Flag_CO2='Y'
+d2query$CH4_notes=''
+d2query$CO2_notes=''
+
+# export merged file - day 1
+write.csv(d1query,"/Users/abbeyyatsko/Desktop/repos/serc_deadwood/pilot_LGR/working_files/day1_merged.csv", row.names = FALSE)
+# export merged file - day 2
+write.csv(d2query,"/Users/abbeyyatsko/Desktop/repos/serc_deadwood/pilot_LGR/working_files/day2_merged.csv", row.names = FALSE)
+```
+
+## PART 4 - PROCESS ----
+dis is where we do the thing such that the data is starting to be processed. from the exported 'intermediate' files, we are now able to create linear plots using (fDOY ~ CO2/CH4) and then further seperating out individual records by PIECETAG. 
+
+first, take the merged data for the fluxes and join info for samples (pilot_raw_data.csv) based on 'PIECETAG'
+```{r}
+# load in and merge day 1 and 2 flux data
+d1query <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/pilot_LGR/working_files/day1_merged.csv")
+d2query <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/pilot_LGR/working_files/day2_merged.csv")
+data.all <- rbind(d1query, d2query)
+
+# bring in raw data with DC, moisture, info etc. 
+rawdata <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_deadwood/pilot_LGR/pilot_raw_data.csv")
+
+# right join data.all and rawdata
+data.all <-  data.all %>% right_join(rawdata,by="PIECETAG")
+data.all
+
+# change decay class to a factor so we can color the graphs by decay class 
+data.all$DC.2021 <- as.factor(data.all$DC.2021)
+
+```
+
+to start out by visualizing each individual sample fluxes for both co2 and ch4: 
+```{r graph seperate samples}
+# all of this is in PPM and now combined for day 1 and day 2
+
+# co2 (plot 1) and ch4 (plot 2)
+plot1 <- ggplot(data.all, aes(fDOY, CO2, color = DC.2021)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+plot2 <- ggplot(data.all, aes(fDOY, CH4, color = DC.2021)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+
+```
+
+convert ppm to moles for CH4 and CO2:
+```{r ppm to mole conversion}
+# use known volume of the 4oz mason jar chamber (in m3) to convert ppm of gas to liters of gas
+
+# CH4
+data.all$CH4_d_L <- 
+  # parts CH4 per million parts air * volume of air in chamber (m3) * 1000 L per m3
+  (data.all$CH4/1000000) * data.all$Volume * 1000 
+#CO2
+data.all$CO2_d_L <- 
+  # parts CO2 per million parts air * volume of air in chamber (m3) * 1000 L per m3
+  (data.all$CO2/1000000) * data.all$Volume * 1000 
+
+## Use ideal gas law to calculate umol of CH4 or mmol of CO2
+### CHANGE FOR NASA -- this is where you need some temperature data ###
+# CH4
+data.all$CH4_d_umol <- 
+  # (atm pressure * L CH4) / (R in L*atm/?K*mol * ?K temp) * 10^6 umol/mol
+  ((1*data.all$CH4_d_L)/(0.08206*(data.all$AmbT_C+273)))*10^6
+# CO2
+data.all$CO2_d_mmol <- 
+  # (atm pressure * L CO2) / (R in L*atm/?K*mol * ?K temp) 
+  ((1*data.all$CO2_d_L)/(0.08206*(data.all$AmbT_C+273)))*10^3
+```
+
+now visualize fluxes for both co2 and ch4 in terms of moles GHG / day: 
+```{r graph seperate samples}
+# day 1 co2 (plot 1) and ch4 (plot 2)
+plot1 <- ggplot(data.all, aes(fDOY, CO2_d_mmol, color = DC.2021)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+plot2 <- ggplot(data.all, aes(fDOY, CH4_d_umol, color = DC.2021)) + 
+  geom_point() + 
+  facet_wrap( ~ PIECETAG, ncol = 3, scales = "free") + 
+  stat_smooth(method = "lm") +
+  theme_classic()
+```
+
+# KEEP WORKING HERE - UNFINISHED FOR THE D1 and D2 MERGE 
+
+create seperate files for each sample's flux measurement: 
+```{r}
+# day 1 
+samps1 <- unique(d1query$PIECETAG)
+# what we want the function to do: take the 'query' search for all rows with an entry from the 'samps' vectors, then create a new dataframe (appropriately labeled with the PIECETAG) and run a linear regression on it for both time ~ CO2 and time ~ CH4 
+
+# creates a large df containing splits 9 ways via PIECETAG 
+df <- split(d1query, d1query$PIECETAG)
+
+for (i in 1:length(df)) {
+  assign(paste0("samp", i), as.data.frame(df[[i]]))
+}
+
+# figure out a better name to rename all of these dataframes (function???)
+samp_130003A <- samp1
+samp_130346A <- samp2
+samp_150650A <- samp3
+samp_152539A <- samp4
+samp_20145A <-  samp5
+samp_30050A <-  samp6
+samp_30242A <-  samp7
+samp_41459A <-  samp8 
+samp_42706A <- samp9
+
+# try to run lm on all of these 9 items of the list? 
+# samp_130003A 
+samp_130003A_lm_CH4 <- lm(CH4_d_umol ~ fDOY, samp_130003A)
+summary(samp_130003A_lm_CH4)
+samp_130003A_lm_CO2 <- lm(CO2_d_mmol ~ fDOY, samp_130003A)
+summary(samp_130003A_lm_CO2)
+
+# samp_130346A 
+samp_130346A_lm_CH4 <- lm(CH4_d_umol ~ fDOY, samp_130346A)
+summary(samp_130346A_lm_CH4)
+samp_130346A_lm_CO2 <- lm(CO2_d_mmol ~ fDOY, samp_130346A)
+summary(samp_130346A_lm_CO2)
+
+# samp_150650A
+samp_150650A_lm_CH4 <- lm(CH4_d_umol ~ fDOY, samp_150650A)
+summary(samp_150650A_lm_CH4)
+samp_150650A_lm_CO2 <- lm(CO2_d_mmol ~ fDOY, samp_150650A)
+summary(samp_150650A_lm_CO2)
+
+# essentially we could keep going on and on with the linear regressions (and hopefully I learn how to write a function to address this unecessary repetition of code-writing)... preliminary looks make sense, but it is important to check that here, no assumptions were checked when running lms. additionally, day 2 data has not been analyzed in the same way 
+
+# day 2 
+samps2 <- unique(d2query$PIECETAG)
+```
+
