@@ -28,7 +28,7 @@ library(dplyr)
 
 # data load and prep 
 # set working directory
-setwd("/Users/abbeyyatsko/Downloads/")
+setwd("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022")
 
 # get names of all LGR files with GHG concentration, a.k.a the data with the form ('...f####.txt')
 filenames <- list.files(pattern='f0000',full.names=T)
@@ -83,9 +83,8 @@ here, the goal is to take information about each individual sample that was meas
 
 read in and format metadata, focusing on fraction Day of Year (fDOY):
 ```{r format metadata}
-# day 1 data 
 # read in file with metadata
-meta_dat <- read.csv('/Users/abbeyyatsko/Downloads/dw_sample_cubes_all - Sheet1 (6).csv')
+meta_dat <- read.csv('dw_sample_cubes_all - Sheet1 (6).csv')
 as.Date(meta_dat$measure_day, '%m/%d/%Y')
 
 ## Pull out date and time data
@@ -115,10 +114,8 @@ meta_dat$PIECETAG_DC <- as.factor(meta_dat$PIECETAG_DC)
 # rename co2 and ch4 columns because naming format including '.' messes up the sql code 
 data <- data %>%
   rename(CH4 = X.CH4._ppm,
-         CO2 = X.CO2._ppm)
-
-data <- data %>%
-  rename(CH4_dry = X.CH4.d_ppm,
+         CO2 = X.CO2._ppm,
+         CH4_dry = X.CH4.d_ppm,
          CO2_dry = X.CO2.d_ppm)
 ```
 
@@ -169,7 +166,7 @@ Add 'flag' columns (skip for now?) and export merged data to .csv file
 first, take the merged data for the fluxes and join info for samples (pilot_raw_data.csv) based on 'PIECETAG'
 ```{r}
 # load in merged data
-data_merge <- read.csv("/Users/abbeyyatsko/Downloads/data_merged.csv")
+# data_merge <- read.csv("/Users/abbeyyatsko/Downloads/data_merged.csv")
 
 # check structure and adjust factor variables
 str(data_merge)
@@ -200,28 +197,27 @@ ch4 <- ggplot(data_merge_day1, aes(fDOY, CH4_dry, color = decay_class)) +
 convert ppm to moles for CH4 and CO2
 ```{r}
 # use known volume of chamber (in m3) to convert ppm of gas to liters of gas
-# little mason jars are 4oz = 0.118294L 
+# little mason jars are 4oz = 0.000118294m3 
 # add chamber volume column: 
-data_merge$chamber_vol <- 0.118294
+data_merge$chamber_vol_m3 <- 0.000118294
 
-# need to subtract volume of wood block itself: modeled as 3x3x3cm cube = 0.009 L 
+# need to subtract volume of wood block itself: modeled as 3x3x3cm cube = 9e-6
 # **this assumption might change: idea to model some as soil, some as the cube? to be determined**
 # add sample volume column: 
-data_merge$sample_vol <- 0.009
+data_merge$sample_vol_m3 <- 9e-6
 
 # add gas volume column 
-data_merge$gas_vol <- data_merge$chamber_vol - data_merge$sample_vol
+data_merge$gas_vol_m3 <- data_merge$chamber_vol_m3 - data_merge$sample_vol_m3
 
-## FIX UNITS HERE - steps above are in L when they shoudl be in ml 
 # CH4 
 data_merge$CH4_dry_L=
   # parts CH4 per million parts air * volume of air in chamber (m3) * 1000 L per m3
-  (data_merge$CH4_dry/1000000) * data_merge$gas_vol * 1000 
+  (data_merge$CH4_dry/1000000) * data_merge$gas_vol_m3 * 1000 
 
 # CO2
 data_merge$CO2_dry_L=
   # parts CO2 per million parts air * volume of air in chamber (m3) * 1000 L per m3
-  (data_merge$CO2_dry/1000000) * data_merge$gas_vol * 1000 
+  (data_merge$CO2_dry/1000000) * data_merge$gas_vol_m3 * 1000 
 
 # Use ideal gas law to calculate umol of CH4 or mmol of CO2
 # CH4
@@ -314,10 +310,10 @@ CH4_fluxfinal <- merge(fluxes.CH4, meta_dat, by="Time_start")
 
 ## Export fluxes as .csv file
 # CO2 (units are mmol/day)
-write.csv(CO2_fluxfinal,"/Users/abbeyyatsko/Downloads/CO2_fluxfinal.csv", row.names = FALSE)
+write.csv(CO2_fluxfinal,"/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CO2_fluxfinal.csv", row.names = FALSE)
 
 # CH4 (units are umol/day)
-write.csv(CH4_fluxfinal,"/Users/abbeyyatsko/Downloads/CH4_fluxfinal.csv", row.names = FALSE)
+write.csv(CH4_fluxfinal,"/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CH4_fluxfinal.csv", row.names = FALSE)
 ```
 
 visualize chamber fluxes 
