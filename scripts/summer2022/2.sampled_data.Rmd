@@ -1,0 +1,88 @@
+---
+title: "2.sampled_data"
+author: "abbey yatsko"
+date: "26/08/2022"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 2. Sampled data - compare what was sampled out of target data, preliminary visualization for sampling effort 
+
+## Library prep
+```{r}
+library(stringr)
+library(dplyr)
+```
+
+## Data load and prep 
+```{r}
+# targeted samples list was downloaded from google drive (where it was updated as samples were searched for in mark out process)
+targeted <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/dw_target_samples.csv")
+sampled <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/dw_sample_cubes_all - Sheet1 (6).csv")
+```
+
+## Compare what was sampled to what was targeted 
+```{r}
+targeted_tags <- unique(targeted$PIECETAG)
+sampled_tags <- unique(sampled$PIECETAG)
+
+# length of both vectors to show proportion of sampled out of targeted 
+length(targeted_tags)
+length(sampled_tags)
+# 23 that were targeted but not sampled 
+
+# how many samples were not found in the initial dw coordinate layout? 
+table(str_count(targeted$tag_notes, "not found")) 
+# 7 instances of not found being noted in the initial planning 
+```
+
+## Preliminary visualization for what was sampled 
+```{r}
+# merge back in species specific oak information 
+original <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/dw_targetsamples_presample.csv")
+oak_revert <- original[c("SPCODE_all", "PIECETAG")]
+
+# merge with sampled data
+sampled <- merge(sampled, oak_revert, by = c("PIECETAG")) 
+sampled <- sampled %>% relocate(SPCODE_all, .before = species)
+
+# decay class distribution by species (bar graph)
+ggplot(data = sampled, aes(x = decay_class)) + 
+  geom_bar(position="stack", stat="count")+ 
+  facet_wrap(~species)+
+  theme_light()+ 
+  geom_text(aes(label = ..count..), stat = "count", position = "fill")
+
+# calculate average respiration temperature - add column
+sampled$avg_respT <- rowMeans(sampled[ , c(12:16)], na.rm = TRUE)
+
+# decay class by moisture percentage (boxplot)
+ggplot(data = sampled, aes(x = decay_class, y = moisture_percentage_g)) + 
+  geom_boxplot()+ 
+  theme_light()
+
+# decay class by fruiting body (bar graph)
+# code variable as: 
+# 0 = no FB
+# 1 = yes FB
+sampled$fruiting_bods[sampled$fruiting_bods == ""] <- "0"
+sampled$fruiting_bods[sampled$fruiting_bods == "y"] <- "1"
+
+ggplot(sampled, aes(x = decay_class, fill = fruiting_bods)) +
+  geom_bar(stat = "count", position = "dodge")+
+  theme_classic()
+
+# decay class by termite
+# code variable as: 
+# 0 = no termites
+# 1 = yes termites
+sampled$termite[sampled$termite == ""] <- "0"
+sampled$termite[sampled$termite == "y"] <- "1"
+
+ggplot(sampled, aes(x = decay_class, fill = termite)) +
+  geom_bar(stat = "count", position = "dodge")+
+  theme_classic()
+```

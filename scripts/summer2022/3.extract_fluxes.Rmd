@@ -1,5 +1,5 @@
 ---
-title: "LGR_processing_template_pilot"
+title: "3.extract_fluxes"
 author: "abbey yatsko"
 date: "8/24/2021"
 output: html_document
@@ -9,15 +9,10 @@ output: html_document
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-# LGR Processing Template 
-## August 2022
-
-## PART 1 - INTRODUCTION ----
+# 3. Extract fluxes
 ### The purpose of this document is to process and visualize gas flux data from the Los Gatos Research Ultraportable Greenhouse Gas Analyzer (LGR UGGA). Gas flux data comes from pieces of deadwood at different stages in the decay trajectory. This document uses pilot data collected from 257 samples of deadwood at the Smithsonian Environmental Research Center (SERC) in Edgewater, MD. All code is adapted from Genevieve Noyce.  
 
-## PART 2 - PREPROCESS ----
-### Set workspace, load in raw data (.txt files taken directly from the LGR include necessary packages and call on libraries
-
+## Set workspace, load in raw data
 ```{r workspace}
 library(data.table)
 library(scales)
@@ -85,6 +80,19 @@ read in and format metadata, focusing on fraction Day of Year (fDOY):
 ```{r format metadata}
 # read in file with metadata
 meta_dat <- read.csv('dw_sample_cubes_all - Sheet1 (6).csv')
+
+# add in oak specific information (just to have species level)
+add_oak <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/dw_targetsamples_presample.csv")
+add_oak <- add_oak[c("SPCODE_all", "PIECETAG")]
+
+# there are some duplicated rows that have to be removed prior to merging
+sum(duplicated(add_oak))
+add_oak <- distinct(add_oak)
+
+# merge with sampled data (just oaks)
+meta_dat <- meta_dat %>% left_join(add_oak)
+meta_dat <- sampled %>% relocate(SPCODE_all, .before = species)
+
 as.Date(meta_dat$measure_day, '%m/%d/%Y')
 
 ## Pull out date and time data
@@ -102,7 +110,7 @@ fDOY_end <- as.numeric(julian(date_time_end,'2022-01-01'))  #Change for year
 meta_dat <- cbind(fDOY_start,fDOY_end,meta_dat)
 
 # calculate average respiration temperature - add column
-meta_dat$avg_respT <- rowMeans(meta_dat[ , c(14:18)], na.rm = TRUE)
+meta_dat$avg_respT <- rowMeans(meta_dat[ , c(15:19)], na.rm = TRUE)
 
 # create new identifier: PIECETAG_DC (includes piecetag but also decay class info)
 # this is necessary because sometimes multiple samples were taken per log (and share the same PIECETAG)
