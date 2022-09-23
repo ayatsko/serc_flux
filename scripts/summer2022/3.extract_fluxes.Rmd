@@ -319,9 +319,11 @@ CH4_fluxfinal <- merge(fluxes.CH4, meta_dat, by="Time_start")
 ## Export fluxes as .csv file
 # CO2 (units are mmol/day)
 # write.csv(CO2_fluxfinal,"/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CO2_fluxfinal.csv", row.names = FALSE)
+# CO2_fluxfinal <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CO2_fluxfinal.csv")
 
 # CH4 (units are umol/day)
 # write.csv(CH4_fluxfinal,"/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CH4_fluxfinal.csv", row.names = FALSE)
+# CH4_fluxfinal <- read.csv("/Users/abbeyyatsko/Desktop/repos/serc_flux/data/summer2022/finalfluxes/CH4_fluxfinal.csv")
 ```
 
 visualize chamber fluxes 
